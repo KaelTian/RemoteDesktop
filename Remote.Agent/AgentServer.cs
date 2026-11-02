@@ -17,12 +17,13 @@ namespace Remote.Agent;
 ///       2 = 鼠标按键: button(int32,0左/1右/2中) down(bool) x(int32) y(int32)
 ///       3 = 键盘按键: vkCode(int32) down(bool)
 ///       4 = 滚轮: delta(int32)
+///       5 = 流设置: fps(int32) quality(int32)（集控网格用低帧率，放大时提高）
 /// 鼠标坐标均为相对采集区域左上角的像素坐标，服务端按采集区域平移。
 /// </summary>
 public class AgentServer
 {
-    private const int TargetFps = 25;
-    private static readonly TimeSpan FrameInterval = TimeSpan.FromMilliseconds(1000.0 / TargetFps);
+    private const int DefaultFps = 25;
+    private const int DefaultQuality = 70;
 
     private readonly IScreenCapture _capture;
     private readonly string? _requiredToken;
@@ -98,8 +99,9 @@ public class AgentServer
                      $"winsta={DesktopInfo.WindowStationName()} sendInputProbe={InputInjector.Probe()} " +
                      $"foreground='{fg.Title}' ({fg.ProcessName}, pid={fg.ProcessId}, integrity={fg.Integrity})");
 
+            var streamSettings = new StreamSettings();
             input = new InputTracker();
-            inputTask = Task.Run(() => ReceiveInputAsync(reader, input, remote));
+            inputTask = Task.Run(() => ReceiveInputAsync(reader, input, streamSettings, remote));
 
             long frames = 0, bytes = 0, nullFrames = 0;
             long statsStart = Environment.TickCount64, statsAt = statsStart;
@@ -107,7 +109,7 @@ public class AgentServer
             while (true)
             {
                 var started = Stopwatch.GetTimestamp();
-                byte[]? jpeg = _capture.CaptureJpeg(quality: 70);
+                byte[]? jpeg = _capture.CaptureJpeg(streamSettings.Quality);
                 if (jpeg != null)
                 {
                     frames++;
@@ -129,11 +131,13 @@ public class AgentServer
                 if (now - statsAt >= 5000)
                 {
                     double elapsed = Math.Max(0.001, (now - statsStart) / 1000.0);
-                    Log.Info($"{remote} frames={frames} bytes={bytes / 1024}KB avgFps={frames / elapsed:F1} nullCapture={nullFrames}");
+                    Log.Info($"{remote} frames={frames} bytes={bytes / 1024}KB avgFps={frames / elapsed:F1} " +
+                             $"nullCapture={nullFrames} fps={streamSettings.Fps} quality={streamSettings.Quality}");
                     statsAt = now;
                 }
 
-                var remaining = FrameInterval - Stopwatch.GetElapsedTime(started);
+                var interval = TimeSpan.FromMilliseconds(1000.0 / streamSettings.Fps);
+                var remaining = interval - Stopwatch.GetElapsedTime(started);
                 if (remaining > TimeSpan.Zero) await Task.Delay(remaining);
             }
         }
@@ -243,7 +247,8 @@ public class AgentServer
         }
     }
 
-    private void ReceiveInputAsync(BinaryReader reader, InputTracker input, string remote)
+    private void ReceiveInputAsync(BinaryReader reader, InputTracker input,
+        StreamSettings streamSettings, string remote)
     {
         bool firstPacket = true;
         try
@@ -285,6 +290,16 @@ public class AgentServer
                         input.Wheel(reader.ReadInt32());
                         break;
 
+                    case 5:
+                    {
+                        int fps = reader.ReadInt32();
+                        int quality = reader.ReadInt32();
+                        streamSettings.Fps = fps;
+                        streamSettings.Quality = quality;
+                        Log.Info($"{remote} stream fps={streamSettings.Fps} quality={streamSettings.Quality}");
+                        break;
+                    }
+
                     default:
                         Log.Warn($"{remote} unknown input type={type}, closing input loop");
                         return;
@@ -306,6 +321,25 @@ public class AgentServer
 
     private int ToScreenY(int y) =>
         Math.Clamp(_capture.Top + y, _capture.Top, _capture.Top + _capture.Height - 1);
+
+    /// <summary>每个连接独立的推流参数，客户端可用 type=5 随时调整。</summary>
+    private sealed class StreamSettings
+    {
+        private int _fps = DefaultFps;
+        private int _quality = DefaultQuality;
+
+        public int Fps
+        {
+            get => Volatile.Read(ref _fps);
+            set => Volatile.Write(ref _fps, Math.Clamp(value, 1, 60));
+        }
+
+        public int Quality
+        {
+            get => Volatile.Read(ref _quality);
+            set => Volatile.Write(ref _quality, Math.Clamp(value, 30, 95));
+        }
+    }
 
     /// <summary>记录本连接注入后仍处于按下状态的键/鼠标，断线时统一释放，避免远端卡键。</summary>
     private sealed class InputTracker

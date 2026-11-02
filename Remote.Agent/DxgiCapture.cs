@@ -205,11 +205,20 @@ public sealed class DxgiCapture : IScreenCapture
 
     private void RecoverFromAcquireFailure(Result hr)
     {
-        // DXGI 与 Direct3D11 都有 ResultCode 类型，这里必须写全名
+        // DXGI 与 Direct3D11 都有 ResultCode 类型，这里必须写全名。
+        //
+        // 重点：InvalidCall (0x887A0001) 必须和 AccessLost 一样销毁重建，不能只打日志。
+        // UAC 提权弹窗切到安全桌面时，实测（Win10 + 本机显卡驱动）返回的是
+        // DXGI_ERROR_INVALID_CALL 而不是文档写的 ACCESS_LOST；切桌面瞬间最后一帧
+        // ReleaseFrame 失败也会让 DWM 认为上一帧没释放，此后 AcquireNextFrame 一直报
+        // INVALID_CALL。这两种情况下 duplication 都已不可用，若不销毁重建，_duplication
+        // 永远非 null，采集会永久冻结直到重启 Agent（日志还因限流 5 秒才打一次，看着像“直接挂掉”）。
+        // 对比：GDI 每帧 BitBlt 屏幕 DC、不持有长期 DWM/DXGI 资源，所以安全桌面结束后能自己恢复。
         if (hr == Vortice.DXGI.ResultCode.AccessLost || hr == Vortice.DXGI.ResultCode.SessionDisconnected
-            || hr == Vortice.DXGI.ResultCode.DeviceRemoved || hr == Vortice.DXGI.ResultCode.DeviceReset)
+            || hr == Vortice.DXGI.ResultCode.DeviceRemoved || hr == Vortice.DXGI.ResultCode.DeviceReset
+            || hr == Vortice.DXGI.ResultCode.InvalidCall)
         {
-            Log.Warn($"DXGI 采集需重建 0x{hr.Code:X8}（锁屏/UAC/切会话/改分辨率/设备移除）");
+            Log.Warn($"DXGI 采集需重建 0x{hr.Code:X8}（锁屏/UAC 安全桌面/切会话/改分辨率/设备移除）");
             ReleaseDevices();
             return;
         }
