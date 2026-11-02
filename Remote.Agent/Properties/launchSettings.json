@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Remote.Agent": {
+      "commandName": "Project",
+      "commandLineArgs": "--capture gdi"
+    }
+  }
+}
