@@ -4,6 +4,10 @@
 
 采集后端自动选择：优先 DXGI Desktop Duplication（物理/控制台会话，开销最低），不可用时自动回退到 GDI BitBlt（RDP、虚拟显示等场景仍可工作）。
 
+github地址:
+
+https://github.com/KaelTian/RemoteDesktop
+
 ## 项目结构
 
 ```
